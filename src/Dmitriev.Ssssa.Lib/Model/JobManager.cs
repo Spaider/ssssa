@@ -7,7 +7,7 @@ namespace Dmitriev.Ssssa.Model
 {
   public class JobManager
   {
-    private string _connString;
+    private readonly string _connString;
 
     public JobManager(string connString)
     {
@@ -21,8 +21,8 @@ namespace Dmitriev.Ssssa.Model
 
     public List<Job> GetAllJobs()
     {
-      var jobs = GetAllJobsInternal();
-      var steps = GetAllStepsInternal();
+      var jobs = GetJobsInternal(Guid.Empty);
+      var steps = GetStepsInternal(Guid.Empty);
 
       foreach (var job in jobs)
       {
@@ -35,26 +35,76 @@ namespace Dmitriev.Ssssa.Model
       return jobs;
     }
 
-    public List<Job> GetJob(Guid jobId)
+    public Job GetJob(Guid jobId)
     {
       if (jobId == Guid.Empty)
         throw new ArgumentException("Job ID cannot be empty", "jobId");
 
-      return null;
+      var job = GetJobsInternal(jobId).FirstOrDefault();
+      if (job == null)
+      {
+        return null;
+      }
+      job.Steps = GetStepsInternal(jobId);
+      return job;
+    }
+
+    public void ExecJob(Guid jobId)
+    {
+      if (jobId == Guid.Empty)
+      {
+        throw new ArgumentException("Job ID must be specified", "jobId");
+      }
+
+      var job = GetJob(jobId);
+      if (job == null)
+      {
+        throw new ApplicationException(string.Format("Job ID {0} not found", jobId));
+      }
+      if (job.Steps == null || !job.Steps.Any())
+      {
+        Console.WriteLine("Job contains not steps");
+        return;
+      }
+      Console.WriteLine("Executing job '{0}'", job.Name);
+
+      using (var conn = new SqlConnection(_connString))
+      {
+        conn.Open();
+        conn.InfoMessage += (sender, args) =>
+                  {
+                    Console.WriteLine(args.Message);
+                  };
+        foreach (var step in job.Steps)
+        {
+          Console.ForegroundColor = ConsoleColor.DarkGreen;
+          Console.WriteLine("Step {0}: {1}", step.Id, step.Name);
+          Console.ForegroundColor = ConsoleColor.Gray;
+          
+          var cmd = new SqlCommand(step.SqlCode, conn);
+          cmd.ExecuteNonQuery();
+        }
+        conn.Close();
+      }
+      Console.ForegroundColor = ConsoleColor.DarkGreen;
+      Console.WriteLine("Job completed");
+      Console.ForegroundColor = ConsoleColor.Gray;
     }
 
     #endregion
 
     #region Private methods
 
-    private List<Job> GetAllJobsInternal()
+    private List<Job> GetJobsInternal(Guid jobId)
     {
       var jobs = new List<Job>();
       using (var conn = new SqlConnection(_connString))
       {
         conn.Open();
         var cmd =
-          new SqlCommand("SELECT ov.job_id, ov.name, ov.[description] FROM msdb.dbo.sysjobs_view ov ORDER BY name", conn);
+          jobId == Guid.Empty
+            ? new SqlCommand("SELECT ov.job_id, ov.name, ov.[description] FROM msdb.dbo.sysjobs_view ov ORDER BY name", conn)
+            : new SqlCommand("SELECT ov.job_id, ov.name, ov.[description] FROM msdb.dbo.sysjobs_view ov WHERE ov.job_id = '" + jobId + "' ORDER BY name", conn);
         using (var reader = cmd.ExecuteReader())
         {
           while (reader.Read())
@@ -73,14 +123,16 @@ namespace Dmitriev.Ssssa.Model
       return jobs;
     }
 
-    private List<JobStep> GetAllStepsInternal()
+    private List<JobStep> GetStepsInternal(Guid jobId)
     {
       var steps = new List<JobStep>();
       using (var conn = new SqlConnection(_connString))
       {
         conn.Open();  
         var cmd =
-          new SqlCommand("SELECT s.job_id, s.step_id, s.step_uid, s.step_name, s.command FROM msdb.dbo.sysjobsteps AS s WHERE s.subsystem = 'TSQL'", conn);
+          jobId == Guid.Empty
+            ? new SqlCommand("SELECT s.job_id, s.step_id, s.step_uid, s.step_name, s.command FROM msdb.dbo.sysjobsteps AS s WHERE s.subsystem = 'TSQL'", conn)
+            : new SqlCommand("SELECT s.job_id, s.step_id, s.step_uid, s.step_name, s.command FROM msdb.dbo.sysjobsteps AS s WHERE s.subsystem = 'TSQL' and s.job_id='" + jobId + "'", conn);
         using (var reader = cmd.ExecuteReader())
         {
           while (reader.Read())
